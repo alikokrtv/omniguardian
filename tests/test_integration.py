@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
-from app.models.domain import InventoryLevel, OutboxEvent
+from app.models.domain import AuditLog, InventoryLevel, MonthlyUsage, OutboxEvent
 
 
 def order(index=0, quantity=1, sku="A"):
@@ -39,6 +39,9 @@ async def test_fifty_concurrent_orders_exactly_five_succeed(world):
     assert snapshot["warehouses"][0]["committed_b2b"] == 5
     assert snapshot["warehouses"][0]["stock_on_hand"] == 10
     assert snapshot["warehouses"][0]["in_flight_reserved"] == 5
+    assert (await world.client.get("/api/v1/dashboard/telemetry")).json()[
+        "total_over_allocation_prevented"
+    ] == 45
 
 
 async def test_concurrent_idempotent_replays(world):
@@ -49,6 +52,18 @@ async def test_concurrent_idempotent_replays(world):
     assert len({response.json()["id"] for response in responses}) == 1
     assert (await world.client.get("/api/v1/inventory/A")).json()["available_for_sale"] == 4
     async with world.sessions() as session:
+        assert (
+            await session.scalar(
+                select(func.count()).select_from(AuditLog).where(AuditLog.tenant_id == world.tenant)
+            )
+            == 1
+        )
+        assert (
+            await session.scalar(
+                select(MonthlyUsage.allocation_count).where(MonthlyUsage.tenant_id == world.tenant)
+            )
+            == 1
+        )
         assert (
             await session.scalar(
                 select(func.count())

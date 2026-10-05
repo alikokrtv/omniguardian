@@ -34,7 +34,9 @@ def order_response(order: AllocationOrder) -> dict:
 @router.post("/allocate")
 async def reserve(request: AllocationRequest, principal: Writer):
     async with Session() as session:
-        return order_response(await allocate(session, principal.tenant_id, request))
+        return order_response(
+            await allocate(session, principal.tenant_id, request, principal.actor)
+        )
 
 
 @router.get("/allocations/{allocation_id}")
@@ -55,7 +57,9 @@ async def get_allocation(allocation_id: UUID, principal: Reader):
 async def confirm(allocation_id: UUID, principal: Writer):
     async with Session() as session:
         return order_response(
-            await transition(session, principal.tenant_id, allocation_id, "CONFIRMED")
+            await transition(
+                session, principal.tenant_id, allocation_id, "CONFIRMED", principal.actor
+            )
         )
 
 
@@ -63,7 +67,9 @@ async def confirm(allocation_id: UUID, principal: Writer):
 async def cancel(allocation_id: UUID, principal: Writer):
     async with Session() as session:
         return order_response(
-            await transition(session, principal.tenant_id, allocation_id, "CANCELLED")
+            await transition(
+                session, principal.tenant_id, allocation_id, "CANCELLED", principal.actor
+            )
         )
 
 
@@ -71,7 +77,9 @@ async def cancel(allocation_id: UUID, principal: Writer):
 async def fulfill(allocation_id: UUID, principal: Writer):
     async with Session() as session:
         return order_response(
-            await transition(session, principal.tenant_id, allocation_id, "FULFILLED")
+            await transition(
+                session, principal.tenant_id, allocation_id, "FULFILLED", principal.actor
+            )
         )
 
 
@@ -85,7 +93,7 @@ async def get_inventory(sku: str, principal: Reader):
 @router.put("/inventory/{sku:path}")
 async def update_inventory(sku: str, request: StockRequest, principal: Admin):
     async with Session() as session:
-        await set_stock(session, principal.tenant_id, sku, request)
+        await set_stock(session, principal.tenant_id, sku, request, principal.actor)
         return await inventory(session, principal.tenant_id, sku)
 
 
@@ -131,5 +139,7 @@ async def mock_shopify_webhook(request: AllocationRequest, principal: Writer):
     if request.channel != "shopify":
         raise DomainError("INVALID_CHANNEL", "Shopify mock requires channel=shopify", 422)
     return order_response(
-        await ShopifyAdapter(principal.tenant_id).handle_incoming_webhook(request.model_dump())
+        await ShopifyAdapter(principal.tenant_id, actor=principal.actor).handle_incoming_webhook(
+            request.model_dump()
+        )
     )

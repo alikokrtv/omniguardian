@@ -23,4 +23,4 @@ class ShopifyAdapter(BaseChannelAdapter):
     async def handle_incoming_webhook(self, payload: dict):
         request = AllocationRequest.model_validate({**payload, "channel": "shopify"})
         async with Session() as session:
-            return await allocate(session, self.tenant_id, request)
+            return await allocate(session, self.tenant_id, request, actor=self.actor)

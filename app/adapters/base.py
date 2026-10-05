@@ -6,11 +6,14 @@ from app.models.domain import AllocationOrder
 
 
 class BaseChannelAdapter(ABC):
-    def __init__(self, tenant_id: UUID, safety_ratio: Decimal = Decimal("1")):
+    def __init__(
+        self, tenant_id: UUID, safety_ratio: Decimal = Decimal("1"), actor: str = "system:adapter"
+    ):
         if not Decimal("0") <= safety_ratio <= Decimal("1"):
             raise ValueError("Safety ratio must be between zero and one")
         self.tenant_id = tenant_id
         self.safety_ratio = safety_ratio
+        self.actor = actor
 
     def buffered_quantity(self, afs_qty: int) -> int:
         return int(

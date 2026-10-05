@@ -17,6 +17,7 @@ api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 class Principal:
     tenant_id: UUID
     role: str
+    actor: str
 
 
 async def authenticate(key: Annotated[str | None, Security(api_key_header)]) -> Principal:
@@ -26,7 +27,7 @@ async def authenticate(key: Annotated[str | None, Security(api_key_header)]) -> 
         record = await session.get(ApiKey, hashlib.sha256(key.encode()).hexdigest())
         if record is None or not record.is_active:
             raise DomainError("UNAUTHORIZED", "Valid X-API-Key required", 401)
-        return Principal(record.tenant_id, record.role)
+        return Principal(record.tenant_id, record.role, f"api_key:{record.id}")
 
 
 async def allocator(principal: Annotated[Principal, Depends(authenticate)]) -> Principal:

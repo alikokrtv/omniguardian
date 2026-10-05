@@ -1,19 +1,18 @@
 import hashlib
 import os
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.domain import (
-    AllocationOrder,
     ApiKey,
     InventoryLevel,
-    OutboxEvent,
     Product,
     Tenant,
     Warehouse,
@@ -25,19 +24,31 @@ async def world(monkeypatch):
     url = os.getenv("TEST_DATABASE_URL")
     if not url:
         pytest.skip("Set TEST_DATABASE_URL to run real PostgreSQL integration tests")
-    engine = create_async_engine(url, pool_size=50, max_overflow=10)
+    schema = "test_" + uuid4().hex
+    engine = create_async_engine(
+        url,
+        pool_size=50,
+        max_overflow=10,
+        connect_args={"server_settings": {"search_path": schema}},
+    )
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     from app import worker
     from app.adapters import shopify
-    from app.api import routes
+    from app.api import reporting, routes
     from app.core import auth
     from app.main import app
 
-    for module in [routes, auth, shopify, worker]:
+    for module in [routes, reporting, auth, shopify, worker]:
         monkeypatch.setattr(module, "Session", sessions)
     tenants = [uuid4(), uuid4()]
     keys = [str(uuid4()), str(uuid4())]
     try:
+        # Isolated schemas let append-only triggers remain enabled throughout every test.
+        async with engine.begin() as connection:
+            await connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+            raw = await connection.get_raw_connection()
+            for path in sorted((Path(__file__).resolve().parents[1] / "migrations").glob("*.sql")):
+                await raw.driver_connection.execute(path.read_text(encoding="utf-8"))
         async with sessions.begin() as session:
             for tenant, key in zip(tenants, keys, strict=True):
                 session.add(Tenant(id=tenant, name="isolated-test"))
@@ -90,9 +101,8 @@ async def world(monkeypatch):
                 other_key=keys[1],
             )
     finally:
-        # Delete only fixture-owned tenants and rows, never truncate a shared database.
-        async with sessions.begin() as session:
-            for model in [OutboxEvent, AllocationOrder, InventoryLevel, Product, Warehouse, ApiKey]:
-                await session.execute(delete(model).where(model.tenant_id.in_(tenants)))
-            await session.execute(delete(Tenant).where(Tenant.id.in_(tenants)))
+        # Only the randomly named schema owned by this fixture is dropped. Production audit
+        # rows are never deleted, and tests never disable the immutability triggers.
+        async with engine.begin() as connection:
+            await connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
         await engine.dispose()

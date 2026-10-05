@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 Identifier = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:/-]+$")]
 Quantity = Annotated[int, Field(strict=True, ge=1, le=1_000_000_000)]
 Nonnegative = Annotated[int, Field(strict=True, ge=0, le=1_000_000_000)]
-Channel = Literal["shopify", "amazon", "mirakl", "b2b"]
+Channel = Literal["shopify", "amazon", "mirakl", "b2b", "walmart", "target", "best_buy"]
 
 
 class StrictModel(BaseModel):
@@ -53,6 +53,7 @@ class ProductRequest(StrictModel):
     title: str = Field(min_length=1, max_length=256)
     cost_price: Decimal = Field(default=Decimal("0"), ge=0, max_digits=14, decimal_places=2)
     list_price: Decimal = Field(default=Decimal("0"), ge=0, max_digits=14, decimal_places=2)
+    currency: str = Field(default="USD", pattern=r"^[A-Z]{3}$")
 
 
 class StockRequest(StrictModel):

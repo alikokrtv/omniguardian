@@ -10,6 +10,7 @@ from app.core.config import get_settings
 from app.core.db import Session, engine
 from app.models.domain import ApiKey, InventoryLevel, Product, Tenant, Warehouse
 from app.services.allocation import emit_inventory_change
+from app.services.audit import record_audit
 
 TENANT = UUID("00000000-0000-0000-0000-000000000001")
 WAREHOUSE = UUID("00000000-0000-0000-0000-000000000002")
@@ -69,6 +70,22 @@ async def seed():
             .returning(InventoryLevel.sku_id)
         )
         if result:
+            level = await session.get(InventoryLevel, (TENANT, WAREHOUSE, PRODUCT))
+            record_audit(
+                session,
+                TENANT,
+                "DEMO-SKU",
+                "EH",
+                "MANUAL_ADJUST",
+                {
+                    "stock_on_hand": 0,
+                    "committed_b2b": 0,
+                    "in_flight_reserved": 0,
+                    "available_for_sale": 0,
+                },
+                level,
+                "system:demo-seed",
+            )
             emit_inventory_change(session, TENANT, "DEMO-SKU")
     await engine.dispose()
     print("Demo ready: warehouse EH, DEMO-SKU, initial AFS=5. Key comes from DEMO_API_KEY.")

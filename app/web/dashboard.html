@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OmniGuardian · Control center</title>
+  <link rel="stylesheet" href="/dashboard-assets/dashboard.css">
+  <script src="/dashboard-assets/dashboard.js" defer></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/dashboard"><span class="brand-mark">O<span>G</span></span> OmniGuardian<span class="brand-dot">.</span></a>
+    <div class="workspace-label">OPERATIONS WORKSPACE</div>
+    <nav aria-label="Main navigation">
+      <button class="nav-item selected" data-tab="overview" aria-current="page"><span>◫</span> Overview</button>
+      <button class="nav-item" data-tab="audit"><span>≡</span> Audit trail</button>
+      <button class="nav-item" data-tab="billing"><span>◷</span> Plan & usage</button>
+    </nav>
+    <div class="sidebar-bottom"><span class="shield">◇</span><strong>Every unit accounted for.</strong><p>One inventory truth.<br>Across every channel.</p><span class="version">OMNIGUARDIAN / CONTROL CENTER</span></div>
+  </aside>
+  <main>
+    <header class="topbar"><span>Workspace <span class="slash">/</span> <strong id="breadcrumb">Overview</strong></span><div class="connection"><button id="lang-toggle" class="text-button" style="margin-right:0.75rem; cursor:pointer; font-weight:600; padding:2px 8px; border:1px solid var(--border, #333); border-radius:4px;">🇹🇷 TR</button><span id="connection-dot" class="dot"></span><span id="connection-label">Not connected</span><button id="disconnect" class="text-button" hidden>Disconnect</button></div></header>
+    <section id="login" class="login-panel">
+      <span class="eyebrow">YOUR INVENTORY, IN FOCUS</span><h1>A clearer view of your operations.</h1>
+      <p>Connect your workspace to see inventory, protected orders, and a complete history of every stock movement.</p>
+      <form id="connect-form"><label for="api-key">Workspace API key</label><div class="login-input"><input id="api-key" type="password" autocomplete="off" required maxlength="512" placeholder="Enter your reader or admin API key"><button type="submit" class="primary">Connect workspace <span>→</span></button></div></form>
+      <p class="small">Your key stays in memory for this session and is cleared when you disconnect or reload.</p>
+    </section>
+    <div id="error" class="error" role="alert" hidden></div>
+    <div id="workspace" hidden>
+      <section class="page-heading"><div><span class="eyebrow">INVENTORY INTELLIGENCE</span><h1 id="page-title">Operations overview</h1><p id="page-description">A live view of your stock. A clear record of every decision.</p></div><div class="refresh-block"><span id="updated">Waiting for data</span><button id="refresh" class="secondary">↻ Refresh</button></div></section>
+      <section class="kpi-grid" aria-label="Workspace metrics">
+        <article class="kpi accent"><span class="card-label">Total over-allocation prevented <span class="kpi-symbol">↗</span></span><strong id="prevented">—</strong><p>Distinct orders protected · all time</p></article>
+        <article class="kpi"><span class="card-label">Estimated penalties saved <span class="kpi-symbol">$</span></span><strong id="saved">—</strong><p>USD estimate · not verified savings</p></article>
+        <article class="kpi"><span class="card-label">Monthly allocations <span class="kpi-symbol">◷</span></span><strong id="usage">—</strong><p id="usage-caption">Current UTC billing cycle</p></article>
+      </section>
+      <section id="overview-view" class="view overview-grid">
+        <article class="panel inventory-panel"><div class="panel-heading"><div><h2>Live inventory matrix</h2><p>Active warehouses · refreshes every 5 seconds</p></div><span class="pill neutral">AFS = SOH − B2B − reserved</span></div>
+          <div class="table-toolbar"><label class="search-label" for="inventory-search">Search inventory</label><input id="inventory-search" type="search" placeholder="Search SKU or product title…" maxlength="128"><span id="inventory-count" class="small"></span></div>
+          <div class="table-scroll"><table><thead><tr><th>Product / SKU</th><th>Physical SOH</th><th>B2B</th><th>Reserved</th><th>Live AFS</th><th>Status</th></tr></thead><tbody id="inventory-rows"></tbody></table></div>
+          <div class="table-footer"><span class="small">Low stock: 1–5 units available</span><div><button id="inventory-first" class="text-button" disabled>First page</button><button id="inventory-next" class="text-button" disabled>Next page →</button></div></div>
+        </article>
+        <article class="panel activity-panel"><div class="panel-heading"><div><h2>Recent activity</h2><p>Latest committed inventory events</p></div><span class="dot live"></span></div><ol id="activity" class="activity-list"></ol><button class="activity-link text-button" data-tab="audit">Explore the audit trail →</button></article>
+      </section>
+      <section id="audit-view" class="view panel" hidden><div class="panel-heading"><div><h2>Immutable audit trail</h2><p>Append-only records · dates in UTC · newest first</p></div><span class="pill neutral">Transactional ledger</span></div>
+        <form id="audit-filter" class="filter-bar"><label>SKU<input id="audit-sku" placeholder="All SKUs" maxlength="128"></label><label>From (inclusive)<input id="audit-start" type="date"></label><label>Until (exclusive)<input id="audit-end" type="date"></label><button class="secondary" type="submit">Apply filters</button></form>
+        <div class="table-scroll"><table><thead><tr><th>Timestamp (UTC)</th><th>Action</th><th>SKU / warehouse</th><th>AFS change</th><th>Order</th><th>Actor</th></tr></thead><tbody id="audit-rows"></tbody></table></div>
+        <div class="table-footer"><span class="small">AFS deltas include reservations and commitments.</span><div><button id="audit-first" class="text-button" disabled>First page</button><button id="audit-next" class="text-button" disabled>Older events →</button></div></div>
+      </section>
+      <section id="billing-view" class="view billing-grid" hidden><article class="panel plan-card"><span class="eyebrow">YOUR CURRENT PLAN</span><h2 id="plan-name">—</h2><p id="cycle">—</p><div class="usage-line"><strong id="plan-used">—</strong><span id="plan-limit">—</span></div><progress id="quota-progress" max="100" value="0" aria-label="Monthly allocation quota used"></progress><p id="remaining">—</p><div class="billing-note">Each successful first-time order reservation counts once. Retries and failed orders do not count. Cancellations do not reverse usage.</div></article><article class="panel plan-options"><h2>Room to grow</h2><div><strong>Starter</strong><span>1,000 orders / month</span></div><div><strong>Growth</strong><span>10,000 orders / month</span></div><div><strong>Enterprise</strong><span>Unlimited orders</span></div><p>Contact your account owner to change your plan. Monthly usage resets on the first day of each month at 00:00 UTC.</p></article></section>
+      <footer class="page-footer"><span>Protected stock. Traceable decisions.</span><span>Loss-prevention estimates reflect observed stock rejections since tracking began.</span></footer>
+    </div>
+  </main>
+</body>
+</html>

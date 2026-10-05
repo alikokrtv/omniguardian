@@ -1,13 +1,20 @@
+import logging
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import AllocationRequest, StockRequest
 from app.core.errors import DomainError
 from app.models.domain import AllocationOrder, InventoryLevel, OutboxEvent, Product, Warehouse
+from app.services.audit import record_audit, snapshot
+from app.services.billing import consume_allocation
+from app.services.telemetry import record_rejection
+
+logger = logging.getLogger(__name__)
 
 
 def emit_inventory_change(session: AsyncSession, tenant_id: UUID, sku: str):
@@ -45,7 +52,28 @@ async def lock_level(session: AsyncSession, tenant_id: UUID, warehouse: str, sku
 
 
 async def allocate(
-    session: AsyncSession, tenant_id: UUID, request: AllocationRequest
+    session: AsyncSession,
+    tenant_id: UUID,
+    request: AllocationRequest,
+    actor: str = "system:internal",
+) -> AllocationOrder:
+    try:
+        return await _allocate(session, tenant_id, request, actor)
+    except DomainError as exc:
+        if exc.code == "OUT_OF_STOCK":
+            try:
+                await record_rejection(session, tenant_id, request)
+            except SQLAlchemyError:
+                # A metrics failure must not turn a clean stock rejection into a success.
+                logger.exception("rejection_telemetry_failed tenant=%s", tenant_id)
+        raise
+
+
+async def _allocate(
+    session: AsyncSession,
+    tenant_id: UUID,
+    request: AllocationRequest,
+    actor: str,
 ) -> AllocationOrder:
     async with session.begin():
         # Unique constraints serialize concurrent duplicate deliveries, including new keys
@@ -62,7 +90,7 @@ async def allocate(
                 request_hash=request.fingerprint(),
                 status="RESERVED",
                 line_items=[line.model_dump() for line in request.line_items],
-                created_at=datetime.now(UTC),
+                created_at=func.now(),
             )
             .on_conflict_do_nothing()
             .returning(AllocationOrder.id)
@@ -82,6 +110,7 @@ async def allocate(
                 raise DomainError("IDEMPOTENCY_CONFLICT", "Key was used with a different request")
             return existing
 
+        await consume_allocation(session, tenant_id)
         # Every inventory writer uses the same global ordering, preventing cart deadlocks.
         for line in sorted(request.line_items, key=lambda line: (line.warehouse_code, line.sku)):
             active = await session.scalar(
@@ -96,14 +125,31 @@ async def allocate(
             afs = level.stock_on_hand - level.committed_b2b - level.in_flight_reserved
             if afs < line.quantity:
                 raise DomainError("OUT_OF_STOCK", f"Insufficient AFS for {line.sku}")
+            before = snapshot(level)
             level.in_flight_reserved += line.quantity
+            record_audit(
+                session,
+                tenant_id,
+                line.sku,
+                line.warehouse_code,
+                "RESERVE",
+                before,
+                level,
+                actor,
+                request.order_id,
+                line.quantity,
+            )
             emit_inventory_change(session, tenant_id, line.sku)
         await session.flush()
         return await session.get(AllocationOrder, allocation_id)
 
 
 async def transition(
-    session: AsyncSession, tenant_id: UUID, allocation_id: UUID, target: str
+    session: AsyncSession,
+    tenant_id: UUID,
+    allocation_id: UUID,
+    target: str,
+    actor: str = "system:internal",
 ) -> AllocationOrder:
     async with session.begin():
         order = await session.scalar(
@@ -125,21 +171,40 @@ async def transition(
         }
         if order.status not in allowed.get(target, set()):
             raise DomainError("INVALID_TRANSITION", f"Cannot change {order.status} to {target}")
-        if target in {"CANCELLED", "FULFILLED"}:
-            for line in sorted(
-                order.line_items, key=lambda line: (line["warehouse_code"], line["sku"])
-            ):
-                level = await lock_level(session, tenant_id, line["warehouse_code"], line["sku"])
+        for line in sorted(
+            order.line_items, key=lambda line: (line["warehouse_code"], line["sku"])
+        ):
+            level = await lock_level(session, tenant_id, line["warehouse_code"], line["sku"])
+            before = snapshot(level)
+            if target in {"CANCELLED", "FULFILLED"}:
                 level.in_flight_reserved -= line["quantity"]
                 if target == "FULFILLED":
                     level.stock_on_hand -= line["quantity"]
                 emit_inventory_change(session, tenant_id, line["sku"])
+            record_audit(
+                session,
+                tenant_id,
+                line["sku"],
+                line["warehouse_code"],
+                {"CONFIRMED": "CONFIRM", "CANCELLED": "CANCEL", "FULFILLED": "FULFILL"}[target],
+                before,
+                level,
+                actor,
+                order.order_id,
+                line["quantity"],
+            )
         order.status = target
         await session.flush()
         return order
 
 
-async def set_stock(session: AsyncSession, tenant_id: UUID, sku: str, request: StockRequest):
+async def set_stock(
+    session: AsyncSession,
+    tenant_id: UUID,
+    sku: str,
+    request: StockRequest,
+    actor: str = "system:internal",
+):
     async with session.begin():
         warehouse = await session.scalar(
             select(Warehouse).where(
@@ -172,9 +237,25 @@ async def set_stock(session: AsyncSession, tenant_id: UUID, sku: str, request: S
             raise DomainError(
                 "STOCK_CONFLICT", "Physical stock cannot be below commitments and holds"
             )
+        before = snapshot(level)
+        if request.committed_b2b < level.managed_b2b:
+            raise DomainError(
+                "WHOLESALE_LOCKED", "Commitments cannot be below confirmed wholesale POs"
+            )
         level.stock_on_hand = request.stock_on_hand
         level.committed_b2b = request.committed_b2b
-        emit_inventory_change(session, tenant_id, sku)
+        if snapshot(level) != before:
+            record_audit(
+                session,
+                tenant_id,
+                sku,
+                request.warehouse_code,
+                "MANUAL_ADJUST",
+                before,
+                level,
+                actor,
+            )
+            emit_inventory_change(session, tenant_id, sku)
 
 
 async def inventory(session: AsyncSession, tenant_id: UUID, sku: str) -> dict:
@@ -200,6 +281,8 @@ async def inventory(session: AsyncSession, tenant_id: UUID, sku: str) -> dict:
                 "committed_b2b": level.committed_b2b,
                 "in_flight_reserved": level.in_flight_reserved,
                 "available_for_sale": level.available_for_sale,
+                "managed_b2b": level.managed_b2b,
+                "revision": level.revision,
             }
             for level, code, active in rows
         ],

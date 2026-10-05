@@ -1,13 +1,17 @@
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, TimeoutError
 
+from app.api.reporting import router as reporting_router
 from app.api.routes import router
+from app.api.suite_routes import router as suite_router
 from app.core.config import get_settings
 from app.core.db import engine
 from app.core.errors import DomainError
@@ -24,8 +28,34 @@ async def lifespan(app: FastAPI):
     await engine.dispose()
 
 
-app = FastAPI(title="OmniGuardian", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="OmniGuardian", version="0.2.0", lifespan=lifespan)
 app.include_router(router)
+app.include_router(reporting_router)
+app.include_router(suite_router)
+WEB_ROOT = Path(__file__).resolve().parent / "web"
+app.mount("/dashboard-assets", StaticFiles(directory=WEB_ROOT), name="dashboard-assets")
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Vary"] = "X-API-Key"
+    if request.url.path.startswith("/dashboard"):
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; script-src 'self'; style-src 'self'; "
+            "connect-src 'self'; img-src 'self' data:; object-src 'none'; "
+            "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+        )
+    return response
+
+
+@app.get("/dashboard", include_in_schema=False)
+async def dashboard():
+    return FileResponse(WEB_ROOT / "dashboard.html", headers={"Cache-Control": "no-store"})
 
 
 @app.exception_handler(DomainError)
