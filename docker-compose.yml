@@ -1,0 +1,89 @@
+x-app: &app
+  build: .
+  environment: &environment
+    DATABASE_URL: postgresql+asyncpg://omniguardian:local-development-only@postgres:5432/omniguardian
+    REDIS_URL: redis://redis:6379/0
+    DEMO_API_KEY: ${DEMO_API_KEY:-local-demo-key-change-before-deploying}
+  init: true
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: omniguardian
+      POSTGRES_PASSWORD: local-development-only
+      POSTGRES_DB: omniguardian
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports: ["127.0.0.1:5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U omniguardian -d omniguardian"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes: ["redis_data:/data"]
+    ports: ["127.0.0.1:6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  migrate:
+    <<: *app
+    command: ["python", "-m", "scripts.migrate"]
+    depends_on:
+      postgres: {condition: service_healthy}
+
+  seed:
+    <<: *app
+    command: ["python", "-m", "scripts.seed"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+
+  api:
+    <<: *app
+    ports: ["127.0.0.1:8000:8000"]
+    depends_on:
+      seed: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+
+  worker:
+    <<: *app
+    command: ["arq", "app.worker.WorkerSettings"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "arq", "app.worker.WorkerSettings", "--check"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+
+  test:
+    <<: *app
+    profiles: ["test"]
+    user: root
+    command: ["sh", "-c", "pip install -c constraints.txt '.[test]' && pytest -q"]
+    environment:
+      <<: *environment
+      TEST_DATABASE_URL: postgresql+asyncpg://omniguardian:local-development-only@postgres:5432/omniguardian
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+
+volumes:
+  postgres_data:
+  redis_data:
